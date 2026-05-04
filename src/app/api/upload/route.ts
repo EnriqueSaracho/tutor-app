@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import pdf from "pdf-parse";
 
 import { chunkText } from "@/lib/chunk-text";
+import { extractPdfText } from "@/lib/extract-pdf-text";
 import { embedTexts } from "@/lib/embeddings";
 import { addDocument } from "@/lib/rag-store";
 
@@ -57,9 +57,7 @@ export async function POST(req: Request) {
   const buffer = Buffer.from(await entry.arrayBuffer());
 
   try {
-    // parse the PDF file with pdf-parse
-    const textResult = await pdf(buffer);
-    const text = textResult.text.trim();
+    const text = await extractPdfText(buffer);
     if (!text) {
       return NextResponse.json(
         { error: "No text could be extracted from this PDF." },

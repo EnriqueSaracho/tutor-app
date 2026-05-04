@@ -30,9 +30,19 @@ export default function Home() {
         body: formData,
       });
 
-      const data = (await res.json()) as
+      const bodyText = await res.text();
+      let data:
         | { text: string; documentId: string; chunkCount: number }
         | { error: string; details?: string };
+      try {
+        data = JSON.parse(bodyText) as typeof data;
+      } catch {
+        throw new Error(
+          res.ok
+            ? "Invalid response from server."
+            : `Upload failed (${res.status}). The server returned an error page instead of JSON.`,
+        );
+      }
 
       if (!res.ok) {
         const details =

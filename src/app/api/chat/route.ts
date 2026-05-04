@@ -1,29 +1,36 @@
 import { NextResponse } from "next/server";
 import { embedQuery } from "@/lib/embeddings";
 import { getOpenAIClient } from "@/lib/openai";
-import { getChunksForRetrieval } from "@/lib/rag-store";
+import { getChunksForRetrieval, type StoredChunk } from "@/lib/rag-store";
 import { retrieveTopK } from "@/lib/retrieve";
 
 export const runtime = "nodejs";
 
 const SYSTEM_PROMPT = `You are a knowledgeable, helpful tutor.
 
-Each user message includes retrieved excerpts from any PDFs the user has uploaded (or a note that no documents were uploaded). Treat statements in those excerpts as authoritative for the user's materials—never contradict them.
+If the user's message includes a "RETRIEVED EXCERPTS" section, treat those excerpts as authoritative for the user's uploaded materials—never contradict them. Ground document-specific facts in the excerpts when they apply.
 
-Use your general knowledge to explain ideas, provide analogies, and add useful background. If there is no useful upload or the excerpts are not relevant, answer from general knowledge when you can.
+If the user's message does not include "RETRIEVED EXCERPTS", answer using general knowledge only. Do not claim the answer is grounded in the user's documents or uploads.
 
-When the excerpts are relevant, ground document-specific facts in them; you may add general knowledge that does not conflict with the excerpts to make the answer clearer.
+Use your general knowledge to explain ideas, provide analogies, and add useful background when excerpts are present, as long as it does not conflict with the excerpts.
 
-If the excerpts and your general knowledge are together insufficient, or you are too uncertain, say you don't know or that there isn't enough information. Do not invent facts.
+When excerpts are present but insufficient, or you are too uncertain, say you don't know or that there isn't enough information. Do not invent document-specific facts.
 
-When you combine the uploaded text with general explanation, you may add one brief sentence distinguishing what comes from their materials versus general background, only when that improves clarity or trust.`;
+When excerpts are present and you combine them with general explanation, you may add one brief sentence distinguishing what comes from their materials versus general background, only when that improves clarity or trust.`;
 
 type ChatRequestBody = {
   message?: unknown;
 };
 
-function buildUserContent(message: string, contextLines: string): string {
-  return `RETRIEVED EXCERPTS (from uploaded PDFs when available):\n${contextLines}\n\nQUESTION:\n${message}`;
+function buildUserContent(message: string, contextLines?: string[] | null): string {
+  const questionBlock = `QUESTION:\n${message}`;
+  if (!contextLines?.length) {
+    return questionBlock;
+  }
+  const block = contextLines
+    .map((line, i) => `[${i + 1}] ${line}`)
+    .join("\n\n");
+  return `RETRIEVED EXCERPTS (from uploaded PDFs when available):\n${block}\n\n${questionBlock}`;
 }
 
 export async function POST(req: Request) {
@@ -48,20 +55,29 @@ export async function POST(req: Request) {
   }
 
   try {
-    const queryEmbedding = await embedQuery(message);
     const storedChunks = getChunksForRetrieval();
+    /** Temporary debug: distinguish empty in-memory store vs chunks gated out by similarity. */
+    const indexedChunkCount = storedChunks.length;
 
-    let contextLines: string;
-    if (storedChunks.length === 0) {
-      contextLines = "(No documents uploaded yet.)";
-    } else {
-      const top = retrieveTopK(queryEmbedding, storedChunks);
-      contextLines = top
-        .map((c, i) => `[${i + 1}] ${c.text}`)
-        .join("\n\n");
+    let chunks: StoredChunk[] = [];
+    let topScores: number[] = [];
+    let retrievalBestScore: number | null = null;
+
+    if (storedChunks.length > 0) {
+      const queryEmbedding = await embedQuery(message);
+      const result = retrieveTopK(queryEmbedding, storedChunks);
+      chunks = result.chunks;
+      topScores = result.scores;
+      retrievalBestScore = result.bestScore;
     }
 
-    const userContent = buildUserContent(message, contextLines);
+    const usedRAG = chunks.length > 0;
+    const userContent = usedRAG
+      ? buildUserContent(
+          message,
+          chunks.map((c) => c.text),
+        )
+      : buildUserContent(message);
 
     const openai = getOpenAIClient();
     const completion = await openai.chat.completions.create({
@@ -80,7 +96,18 @@ export async function POST(req: Request) {
       );
     }
 
-    return NextResponse.json({ reply });
+    return NextResponse.json({
+      reply,
+      usedRAG,
+      retrievedCount: chunks.length,
+      indexedChunkCount,
+      ...(usedRAG ? { topScores } : {}),
+      ...(!usedRAG &&
+      indexedChunkCount > 0 &&
+      retrievalBestScore !== null
+        ? { bestScore: retrievalBestScore }
+        : {}),
+    });
   } catch (err) {
     const message =
       err instanceof Error ? err.message : "Unknown error";
