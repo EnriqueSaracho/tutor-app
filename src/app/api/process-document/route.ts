@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { chunkText } from "@/lib/chunk-text";
 import { extractPdfText } from "@/lib/extract-pdf-text";
 import { createSupabaseAdmin } from "@/lib/supabase-admin";
 
@@ -72,9 +73,38 @@ export async function POST(req: Request) {
   const buffer = Buffer.from(await fileBlob.arrayBuffer());
 
   try {
-    const text = await extractPdfText(buffer);
-    console.log("[process-document] extracted text length:", text.length);
-    return NextResponse.json({ success: true, textLength: text.length });
+    const fullText = await extractPdfText(buffer);
+    console.log("[process-document] extracted text length:", fullText.length);
+
+    const chunks = chunkText(fullText);
+    console.log("[process-document] chunk count:", chunks.length);
+    console.log(
+      "[process-document] sample chunk:",
+      chunks[0]?.slice(0, 100) ?? "(none)",
+    );
+
+    if (chunks.length > 0) {
+      const rows = chunks.map((content) => ({
+        document_id: id,
+        content,
+      }));
+
+      const { error: insertError } = await supabaseAdmin
+        .from("document_chunks")
+        .insert(rows);
+
+      if (insertError) {
+        return NextResponse.json(
+          { error: "Failed to save document chunks." },
+          { status: 500 },
+        );
+      }
+    }
+
+    return NextResponse.json({
+      success: true,
+      chunkCount: chunks.length,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json(
