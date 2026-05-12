@@ -11,6 +11,9 @@ export default function Home() {
   const [uploading, setUploading] = useState(false);
   const [uploadMessage, setUploadMessage] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [activeDocumentId, setActiveDocumentId] = useState<string | null>(
+    null,
+  );
 
   async function onUploadClick() {
     const input = fileInputRef.current;
@@ -55,6 +58,7 @@ export default function Home() {
       }
 
       if ("chunkCount" in data) {
+        setActiveDocumentId(data.documentId);
         setUploadMessage(
           `Uploaded successfully. ${data.chunkCount} chunk(s) indexed.`,
         );
@@ -82,7 +86,11 @@ export default function Home() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: trimmed }),
+        body: JSON.stringify(
+          activeDocumentId
+            ? { message: trimmed, documentId: activeDocumentId }
+            : { message: trimmed },
+        ),
       });
 
       const data = (await res.json()) as
