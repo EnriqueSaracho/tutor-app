@@ -1,8 +1,6 @@
 import { NextResponse } from "next/server";
-import { embedQuery } from "@/lib/embeddings";
 import { getOpenAIClient } from "@/lib/openai";
-import { getChunksForRetrieval, type StoredChunk } from "@/lib/rag-store";
-import { retrieveTopK } from "@/lib/retrieve";
+import { retrieveDocumentChunks } from "@/lib/rag/retrieve-document-chunks";
 
 export const runtime = "nodejs";
 
@@ -20,6 +18,7 @@ When excerpts are present and you combine them with general explanation, you may
 
 type ChatRequestBody = {
   message?: unknown;
+  documentId?: unknown;
 };
 
 function buildUserContent(message: string, contextLines?: string[] | null): string {
@@ -46,6 +45,8 @@ export async function POST(req: Request) {
 
   const message =
     typeof body.message === "string" ? body.message.trim() : "";
+  const documentId =
+    typeof body.documentId === "string" ? body.documentId.trim() : "";
 
   if (!message) {
     return NextResponse.json(
@@ -55,27 +56,19 @@ export async function POST(req: Request) {
   }
 
   try {
-    const storedChunks = getChunksForRetrieval();
-    /** Temporary debug: distinguish empty in-memory store vs chunks gated out by similarity. */
-    const indexedChunkCount = storedChunks.length;
+    const retrievedChunks = documentId
+      ? await retrieveDocumentChunks({
+          query: message,
+          documentId,
+          matchCount: 5,
+        })
+      : [];
 
-    let chunks: StoredChunk[] = [];
-    let topScores: number[] = [];
-    let retrievalBestScore: number | null = null;
-
-    if (storedChunks.length > 0) {
-      const queryEmbedding = await embedQuery(message);
-      const result = retrieveTopK(queryEmbedding, storedChunks);
-      chunks = result.chunks;
-      topScores = result.scores;
-      retrievalBestScore = result.bestScore;
-    }
-
-    const usedRAG = chunks.length > 0;
+    const usedRAG = retrievedChunks.length > 0;
     const userContent = usedRAG
       ? buildUserContent(
           message,
-          chunks.map((c) => c.text),
+          retrievedChunks.map((chunk) => chunk.content),
         )
       : buildUserContent(message);
 
@@ -99,13 +92,9 @@ export async function POST(req: Request) {
     return NextResponse.json({
       reply,
       usedRAG,
-      retrievedCount: chunks.length,
-      indexedChunkCount,
-      ...(usedRAG ? { topScores } : {}),
-      ...(!usedRAG &&
-      indexedChunkCount > 0 &&
-      retrievalBestScore !== null
-        ? { bestScore: retrievalBestScore }
+      retrievedCount: retrievedChunks.length,
+      ...(usedRAG
+        ? { topScores: retrievedChunks.map((chunk) => chunk.similarity) }
         : {}),
     });
   } catch (err) {
