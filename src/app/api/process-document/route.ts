@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { chunkText } from "@/lib/chunk-text";
 import { embedTexts } from "@/lib/embeddings";
 import { extractPdfText } from "@/lib/extract-pdf-text";
+import { insertDocumentChunks } from "@/lib/rag/insert-document-chunks";
 import { createSupabaseAdmin } from "@/lib/supabase-admin";
 
 export const runtime = "nodejs";
@@ -102,48 +103,20 @@ export async function POST(req: Request) {
         embeddings[0]?.length ?? 0,
       );
 
-      const rows = chunks.map((content, i) => ({
-        document_id: id,
-        content,
-        embedding: embeddings[i] ?? [],
-      }));
-
-      const { error: insertError } = await supabaseAdmin
-        .from("document_chunks")
-        .insert(rows);
-
-      if (insertError) {
-        const msg = insertError.message.toLowerCase();
-        const maybeVectorError =
-          msg.includes("vector") || msg.includes("invalid input syntax");
-
-        if (!maybeVectorError) {
-          return NextResponse.json(
-            { error: "Failed to save document chunks.", details: msg },
-            { status: 500 },
-          );
-        }
-
-        // Fallback: pgvector literal form: "[1,2,3,...]"
-        const rowsAsVectorLiteral = chunks.map((content, i) => ({
-          document_id: id,
-          content,
-          embedding: `[${(embeddings[i] ?? []).join(",")}]`,
-        }));
-
-        const { error: insertError2 } = await supabaseAdmin
-          .from("document_chunks")
-          .insert(rowsAsVectorLiteral);
-
-        if (insertError2) {
-          return NextResponse.json(
-            {
-              error: "Failed to save document chunks.",
-              details: insertError2.message,
-            },
-            { status: 500 },
-          );
-        }
+      const chunkInsert = await insertDocumentChunks(
+        supabaseAdmin,
+        id,
+        chunks,
+        embeddings,
+      );
+      if (!chunkInsert.ok) {
+        return NextResponse.json(
+          {
+            error: chunkInsert.message,
+            ...(chunkInsert.details ? { details: chunkInsert.details } : {}),
+          },
+          { status: 500 },
+        );
       }
     }
 
